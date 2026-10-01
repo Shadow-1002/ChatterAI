@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChatterAI</title>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-family: Arial, sans-serif;
+    background: #111827;
+    color: white;
+}
+
+header {
+    padding: 16px 20px;
+    background: #1f2937;
+    border-bottom: 1px solid #374151;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 22px;
+}
+
+#status {
+    margin-top: 5px;
+    font-size: 13px;
+    color: #9ca3af;
+}
+
+main {
+    flex: 1;
+    width: 100%;
+    max-width: 900px;
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+#messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+}
+
+.message {
+    max-width: 80%;
+    padding: 12px 14px;
+    margin: 10px 0;
+    border-radius: 14px;
+    white-space: pre-wrap;
+    line-height: 1.45;
+}
+
+.user {
+    margin-left: auto;
+    background: #2563eb;
+}
+
+.ai {
+    margin-right: auto;
+    background: #374151;
+}
+
+.system {
+    margin: 12px auto;
+    text-align: center;
+    color: #9ca3af;
+    font-size: 13px;
+}
+
+#errorBox {
+    padding: 0 20px 10px;
+}
+
+.error {
+    padding: 14px;
+    border-radius: 12px;
+    background: #3f1d1d;
+    border: 1px solid #7f1d1d;
+    color: #fecaca;
+    font-size: 13px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+form {
+    display: flex;
+    gap: 10px;
+    padding: 14px 20px;
+    background: #1f2937;
+    border-top: 1px solid #374151;
+}
+
+textarea {
+    flex: 1;
+    resize: none;
+    min-height: 48px;
+    max-height: 140px;
+    padding: 13px;
+    border-radius: 12px;
+    border: 1px solid #4b5563;
+    background: #111827;
+    color: white;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+}
+
+textarea:focus {
+    border-color: #60a5fa;
+}
+
+button {
+    padding: 0 20px;
+    border: none;
+    border-radius: 12px;
+    background: #2563eb;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+</style>
+</head>
+
+<body>
+
+<header>
+    <h1>ChatterAI</h1>
+    <div id="status">Starting AI...</div>
+</header>
+
+<main>
+
+    <div id="messages">
+        <div class="system">
+            Your local AI is loading...
+        </div>
+    </div>
+
+    <div id="errorBox"></div>
+
+    <form id="chatForm">
+
+        <textarea
+            id="input"
+            placeholder="Message ChatterAI..."
+            disabled
+        ></textarea>
+
+        <button
+            id="sendButton"
+            type="submit"
+            disabled
+        >
+            Send
+        </button>
+
+    </form>
+
+</main>
+
+<script type="module">
+
+import * as webllm
+    from "https://esm.run/@mlc-ai/web-llm";
+
+
+/* ==================================================
+   MODEL
+================================================== */
+
+const MODEL =
+    "Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
+
+
+/* ==================================================
+   ELEMENTS
+================================================== */
+
+const status =
+    document.getElementById("status");
+
+const messages =
+    document.getElementById("messages");
+
+const input =
+    document.getElementById("input");
+
+const sendButton =
+    document.getElementById("sendButton");
+
+const chatForm =
+    document.getElementById("chatForm");
+
+const errorBox =
+    document.getElementById("errorBox");
+
+
+/* ==================================================
+   STATE
+================================================== */
+
+let engine = null;
+let worker = null;
+let busy = false;
+
+
+/* ==================================================
+   CONVERSATION
+================================================== */
+
+const conversation = [
+
+    {
+        role: "system",
+        content:
+            "You are ChatterAI, a helpful, friendly and intelligent AI assistant. Give clear answers and keep conversations natural."
+    }
+
+];
+
+
+/* ==================================================
+   ADD MESSAGE
+================================================== */
+
+function addMessage(text, type) {
+
+    const message =
+        document.createElement("div");
+
+    message.className =
+        "message " + type;
+
+    message.textContent =
+        text;
+
+    messages.appendChild(message);
+
+    messages.scrollTop =
+        messages.scrollHeight;
+
+    return message;
+}
+
+
+/* ==================================================
+   SHOW ERROR
+================================================== */
+
+function showError(error) {
+
+    console.error(error);
+
+    let errorText;
+
+    if (error instanceof Error) {
+
+        errorText =
+            error.name +
+            ": " +
+            error.message;
+
+        if (error.stack) {
+
+            errorText +=
+                "\n\n" +
+                error.stack;
+
+        }
+
+    } else {
+
+        errorText =
+            String(error);
+
+    }
+
+    errorBox.innerHTML = "";
+
+    const box =
+        document.createElement("div");
+
+    box.className =
+        "error";
+
+    box.textContent =
+        "AI ERROR\n\n" +
+        errorText;
+
+    errorBox.appendChild(box);
+}
+
+
+/* ==================================================
+   LOAD MODEL
+================================================== */
+
+async function loadModel() {
+
+    try {
+
+        status.textContent =
+            "Starting Web Worker...";
+
+
+        /*
+         * Create a dedicated worker.
+         *
+         * The worker runs the WebLLM engine
+         * separately from the webpage.
+         */
+
+        worker =
+            new Worker(
+
+                "webllm-worker.js",
+
+                {
+                    type: "module"
+                }
+
+            );
+
+
+        status.textContent =
+            "Loading Qwen2.5 0.5B...";
+
+
+        engine =
+            await webllm.CreateWebWorkerMLCEngine(
+
+                worker,
+
+                MODEL,
+
+                {
+
+                    appConfig:
+                        webllm.prebuiltAppConfig,
+
+                    logLevel:
+                        "INFO",
+
+                    initProgressCallback:
+                        (progress) => {
+
+                            status.textContent =
+                                progress.text ||
+                                "Loading model...";
+
+                        }
+
+                }
+
+            );
+
+
+        status.textContent =
+            "Qwen2.5 0.5B ready";
+
+
+        addMessage(
+            "The local AI is ready!",
+            "system"
+        );
+
+
+        input.disabled = false;
+
+        sendButton.disabled = false;
+
+        input.focus();
+
+
+    } catch (error) {
+
+        status.textContent =
+            "AI failed to start";
+
+        addMessage(
+            "The AI could not start.",
+            "system"
+        );
+
+        showError(error);
+
+    }
+
+}
+
+
+/* ==================================================
+   SEND MESSAGE
+================================================== */
+
+chatForm.addEventListener(
+    "submit",
+    async (event) => {
+
+        event.preventDefault();
+
+        const text =
+            input.value.trim();
+
+        if (
+            !text ||
+            !engine ||
+            busy
+        ) {
+            return;
+        }
+
+        busy = true;
+
+        input.value = "";
+
+        input.disabled = true;
+
+        sendButton.disabled = true;
+
+        addMessage(
+            text,
+            "user"
+        );
+
+        conversation.push({
+
+            role: "user",
+
+            content: text
+
+        });
+
+        const aiMessage =
+            addMessage(
+                "Thinking...",
+                "ai"
+            );
+
+        try {
+
+            status.textContent =
+                "Generating...";
+
+
+            const stream =
+                await engine.chat.completions.create({
+
+                    messages:
+                        conversation,
+
+                    temperature:
+                        0.7,
+
+                    max_tokens:
+                        256,
+
+                    stream:
+                        true
+
+                });
+
+
+            let answer = "";
+
+
+            for await (
+                const chunk of stream
+            ) {
+
+                const piece =
+                    chunk
+                        .choices?.[0]
+                        ?.delta
+                        ?.content || "";
+
+
+                answer += piece;
+
+                aiMessage.textContent =
+                    answer ||
+                    "Thinking...";
+
+                messages.scrollTop =
+                    messages.scrollHeight;
+
+            }
+
+
+            conversation.push({
+
+                role: "assistant",
+
+                content: answer
+
+            });
+
+
+            status.textContent =
+                "Qwen2.5 0.5B ready";
+
+
+        } catch (error) {
+
+            aiMessage.textContent =
+                "Generation failed.";
+
+            showError(error);
+
+            status.textContent =
+                "Generation failed";
+
+        }
+
+
+        busy = false;
+
+        input.disabled = false;
+
+        sendButton.disabled = false;
+
+        input.focus();
+
+    }
+);
+
+
+/* ==================================================
+   ENTER TO SEND
+================================================== */
+
+input.addEventListener(
+    "keydown",
+    (event) => {
+
+        if (
+            event.key === "Enter" &&
+            !event.shiftKey
+        ) {
+
+            event.preventDefault();
+
+            chatForm.requestSubmit();
+
+        }
+
+    }
+);
+
+
+/* ==================================================
+   START
+================================================== */
+
+loadModel();
+
+</script>
+
+</body>
+</html>
